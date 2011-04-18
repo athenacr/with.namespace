@@ -1,0 +1,5 @@
+exec_with_namespace	usr/bin
+with                usr/bin
+with_exec_c.so      usr/lib/lua/5.1
+with_exec.lua       usr/share/lua/5.1
+withrc              etc/default

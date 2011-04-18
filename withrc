@@ -1,0 +1,12 @@
+-- default 'with' profiles
+
+-- This is always loaded first, when with is started as a sevice
+-- example structure for:
+-- /with/lib -> /usr/lib
+-- /with/lib/python -> /usr/lib/python3
+default = {
+    lib = {
+        python = '/usr/lib/python3',
+    },
+    lib = '/usr/lib',
+}

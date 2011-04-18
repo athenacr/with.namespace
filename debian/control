@@ -1,0 +1,14 @@
+Source: with
+Section: unknown
+Priority: optional
+Maintainer: Roman Shtylman <shtylman@athenacr.com>
+Build-Depends: debhelper (>= 4.0.0), libopenafs-dev, libluabind-dev
+Standards-Version: 3.6.1
+
+Package: with
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, lua5.1, liblua5.1-posix-dev, kstart, liblua5.1-alt-getopt, libluabind0.9.1
+Description: A tool to simplify running jobs against different environments
+ with is a filesystem level utility to allow different jobs to
+ coexist with different views of the same filesystem.
+

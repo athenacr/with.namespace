@@ -1,0 +1,352 @@
+#!/usr/bin/lua
+
+require "posix"
+require "alt_getopt"
+
+require "with_exec"
+
+usage = [==[
+Usage: with [options] <cmd>
+
+Creates a new namespace, installs symlinks into /with/ inside that namespace,
+and then runs cmd inside that namespace.  cmd can be empty, in which case a new
+shell is run.
+
+Reads profiles and defaults from /etc/default/withrc and ~/.withrc
+
+Namespace specification:
+    --augment=with_path=source_path, -a  Creates a link from with_path to source_path
+    --profile=profile_name, -p           Use the specified profile
+    --no-import, -n                      Do not import the current namespace
+
+Tools:
+    --show                               Shows the current namespace
+    --showpid=pid                        Show another process's namespace
+    --clone                              Generate a command line for the current namespace
+    --clonepid=pid                       Generate a command line for another process's namespace
+    --list                               List all the pids that are under with
+    --profiles, -l                       List all the available profiles
+
+Debugging:
+    --dry-run                            Show the lua command that would be performed
+    --exec-fallback                      exec() a normal shell on failure; must be first argument
+
+The following namespaces are reserved since they have special meanings to the 'with' command:
+    profile, profiles, no-default
+    show, showpid, clone, clonepid, list, dry-run, exec-fallback
+]==]
+
+function print_namespace(table, format, indent)
+    local metas = {}
+
+    for _, v in ipairs(table) do
+        -- is it metadata?
+        local meta = v.from:match('[.](%w+)')
+        if meta then
+            metas[#metas + 1] = meta
+        elseif type(v.to) == "table" then
+            io.stdout:write(string.format(indent .. format.nesting, v.from))
+            -- Call print_namespace recursively with an indented format
+            print_namespace(v.to, format, format.show_not_clone and (indent .. '    ') or indent)
+        else
+            io.stdout:write(string.format(indent .. format.line, tostring(v.from), tostring(v.to)))
+        end
+    end
+
+    if #metas > 0 then
+        io.stdout:write(format.meta_pre)
+        local had_meta = false
+        for _, v in ipairs(metas) do
+            io.stdout:write(string.format(indent .. format.meta, v))
+            had_meta = true
+        end
+        if had_meta and format.show_not_clone then io.stdout:write("\n") end
+        io.stdout:write(format.meta_post)
+    end
+end
+
+function namespace_table_for_exec(table)
+    local ret = {}
+
+    for _, v in ipairs(table) do
+        local meta = v.from:match('[.](%w+)')
+        if not meta then
+            if type(v.to) == "table" then
+                ret[v.from] = namespace_table_for_exec(v.to)
+            else
+                ret[v.from] = v.to
+            end
+        end
+    end
+
+    return ret
+end
+
+function namespace_from_exec_cmd(from, to)
+    local namespace = {}
+
+    local pos = from:find("/")
+    if pos then
+        local parent = from:sub(1, pos - 1)
+        namespace[parent] = namespace_from_exec_cmd(from:sub(pos + 1), to)
+    else
+        namespace[from] = to
+    end
+
+    return namespace
+end
+
+function show_pid(pid, show_not_clone)
+    local line_pre  = show_not_clone and '' or 'with '
+    local line_post = show_not_clone and '' or '\n'
+
+    io.stdout:write(line_pre)
+
+    format = {
+        line = show_not_clone and '%s -> %s\n' or '-a %s=%s ',
+        meta_pre = show_not_clone and 'meta: ' or '',
+        meta = show_not_clone and '%s ' or '',
+        meta_post = show_not_clone and '' or '',
+        nesting = show_not_clone and '%s -> \n' or '%s/',
+        show_not_clone = show_not_clone
+    }
+
+    print_namespace(with_exec.show_namespace(pid), format, '')
+
+    io.stdout:write(line_post)
+end
+
+
+function list_with_pids()
+    local basedir = '/proc/'
+    local dirIter = posix.files(basedir)
+    for pidfile in dirIter do
+        if tonumber(pidfile) then
+            local withdir_stat = posix.stat(basedir..pidfile..'/root/with')
+            if withdir_stat then
+                io.stdout:write(pidfile,'\n')
+            end
+        end
+    end
+end
+
+
+function merge_tables(t1, t2)
+    for k, v in pairs(t2) do
+        if type(v) == "table" then
+            if type(t1[k] or false) == "table" then
+                merge_tables(t1[k] or {}, t2[k] or {})
+            else
+                t1[k] = v
+            end
+        else
+            t1[k] = v
+        end
+    end
+    return t1
+end
+
+
+function clone_table(t)
+    if type(t) ~= 'table' then return t end
+    local res = {}
+    for k, v in pairs(t) do
+        res[k] = (type(v) == 'table') and clone_table(v) or v
+    end
+    return res
+end
+
+
+function print_table(t)
+    for k, v in pairs(t) do
+        if type(v) == 'table' then
+            io.stdout:write('{\n')
+            print_table( v )
+            io.stdout:write('}, ')
+        else
+            io.stdout:write(k, '=', v, ', ')
+        end
+        io.stdout:write('\n')
+    end
+end
+
+
+function run_with_command(non_opts, opts, optarg)
+    -- the exec environment to pass to with_exec.exec
+    local exec = { cmd = {}, namespace = {}, exec_cmd = {} }
+
+    -- handle the args
+    local profiles = {}
+    local augments = {}
+    local no_import, show_profiles
+
+    for i, v in ipairs(opts) do
+        if v == 'help' then
+            io.stdout:write(usage)
+            os.exit(1)
+        -- namespace
+        elseif v == 'a' then --augment
+            table.insert(augments, optarg[i])
+        elseif v == 'p' then --profile
+            table.insert(profiles, optarg[i])
+        elseif v == 'n' then --no-import
+            no_import = true
+        -- tools
+        elseif v == "show" then
+            return show_pid('self', true)
+        elseif v == "showpid" then
+            return show_pid(optarg[i], true)
+        elseif v == "clone" then
+            return show_pid('self', false)
+        elseif v == "clonepid" then
+            return show_pid(optarg[i], false)
+        elseif v == "list" then
+            return list_with_pids()
+        elseif v == "l" then --show-profiles
+            show_profiles = true
+        -- debugging
+        elseif v == "dry-run" then
+            exec.dry_run = true
+        end
+    end
+
+    -- Load the /etc/default, then ~/.withrc profiles
+    local config_sandbox = {
+        clone = clone_table
+    }
+
+    setmetatable(config_sandbox, { __index = _G })
+
+    if posix.stat('/etc/default/withrc') then
+        local chunk, err = loadfile('/etc/default/withrc')
+        if not chunk then
+            io.stderr:write('/etc/default/withrc failed to load: ', err, '\n')
+        else
+            local success, err = pcall(setfenv(chunk, config_sandbox))
+            if not success then
+                io.stderr:write('/etc/default/withrc failed to load: ', err, '\n')
+            end
+        end
+    end
+
+    local home_dir = os.getenv('HOME') or ''
+    if posix.stat(home_dir .. '/.withrc') then
+        local chunk, err = loadfile(home_dir..'/.withrc')
+        if not chunk then
+            io.stderr:write(home_dir .. '/.withrc failed to load: ', err, '\n')
+        else
+            local success, err = pcall(setfenv(chunk, config_sandbox))
+            if not success then
+                io.stderr:write(home_dir .. '/.withrc failed to load: ', err, '\n')
+            end
+        end
+    end
+
+    if show_profiles then
+        for k, v in pairs(config_sandbox) do
+            if type(v) == 'table' then
+                io.stdout:write( k, '\n' )
+            end
+        end
+        return
+    end
+
+    -- Clone the current namespace so you can augment it, unless the no-import
+    -- option was specified
+    local namespace = {}
+    if not no_import then
+        namespace = namespace_table_for_exec(with_exec.show_namespace('self'))
+    end
+
+    -- Extract the profiles
+    for _, profile_name in ipairs(profiles) do
+        local profile = config_sandbox[profile_name]
+        if not profile then
+            error("\n" .. "profile '" .. profile_name .. "' not found\n")
+        end
+        namespace = namespace or {}
+        merge_tables(namespace, profile)
+    end
+
+    exec.namespace = namespace
+
+    -- Apply command line
+    -- "--" no longer indicates the beginning of the command to execute; "--" is
+    -- actually ignored.  Now that there is no ambiguity between namespace
+    -- augmenting options and other positional options, we can assume anything
+    -- that is not a proper getopt option is part of the command.
+    for _, v in ipairs(non_opts) do
+        if v ~= '--' then
+            exec.cmd[#exec.cmd + 1] = v
+        end
+    end
+
+    -- Handle namespace augmentations
+    for _, v in ipairs(augments) do
+        v = v:gsub('~', home_dir) -- Be friendly to users, replace ~ with $HOME
+        local pos = v:find('=')
+        if pos then
+            merge_tables(namespace, namespace_from_exec_cmd(v:sub(1, pos - 1), v:sub(pos + 1)))
+        else
+            io.stderr:write("Augment option: '" .. v .. "' needs to be in with_path=source_path form" .. "\n")
+            os.exit(1)
+        end
+    end
+
+    -- Extend the command if needed
+    if #exec.cmd == 0 then
+        exec.cmd = with_exec.shell()
+    end
+
+    -- execute it
+    ret = with_exec.exec(exec)
+    io.stdout:write(tostring(ret),'\n') -- in dry-run mode exec returns a string
+end
+
+
+-- People want to do "exec with --some-args" in their shells to avoid stacked
+-- shell invocations (emulating the effect of a "source usebb").
+-- However, if there's some syntax error in their arguments, this'll kill
+-- their current terminal.
+-- Instead, people can do "exec with --exec-fallback" (aliased to with-exec),
+-- which'll fallback to a shell on failure.
+if #arg > 0 and arg[1] == '--exec-fallback' then
+    -- alt_getopt calls exit directly, so we need to monkeypatch
+    os.exit = function(rc)
+        with_exec.exec{cmd=with_exec.shell()}
+    end
+    table.remove(arg, 1)
+end
+
+
+local non_opts, opts, optarg, optind
+opts, optind, optarg = alt_getopt.get_ordered_opts(arg, "a:b:d:lnp:",
+    {
+        help = 0,
+        -- namespace
+        augment = 'a',
+        profile = 'p',
+        ['no-import'] = 'n',
+        -- tools
+        show = 0,
+        showpid = 1,
+        clone = 0,
+        clonepid = 1,
+        list = 0,
+        profiles = 'l',
+        -- debugging
+        ["dry-run"] = 0
+    }
+)
+
+non_opts = {}
+for i = optind,#arg do
+    table.insert(non_opts, arg[i])
+end
+
+success, val = pcall(run_with_command, non_opts, opts, optarg)
+if not success then
+    io.stderr:write(val .. "\n")
+end
+
+os.exit(success and 0 or 1)
