@@ -1,3 +1,10 @@
+with (1.1) UNRELEASED; urgency=low
+
+  * use WITHRC environment variable to override withrc file path
+  Thanks Kenny Peng.
+
+ -- Roman Shtylman <shtylman@athenacr.com>  Wed, 25 May 2011 09:53:05 -0400
+
 with (1.0) unstable; urgency=low
 
   * initial release

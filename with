@@ -210,7 +210,8 @@ function run_with_command(non_opts, opts, optarg)
         end
     end
 
-    -- Load the /etc/default, then ~/.withrc profiles
+    -- Load the /etc/default, then ~/.withrc profiles, unless overridden by
+    -- a WITHRC environment variable
     local config_sandbox = {
         clone = clone_table
     }
@@ -230,14 +231,18 @@ function run_with_command(non_opts, opts, optarg)
     end
 
     local home_dir = os.getenv('HOME') or ''
-    if posix.stat(home_dir .. '/.withrc') then
-        local chunk, err = loadfile(home_dir..'/.withrc')
+
+    -- Look for WITHRC setting or use ~/.withrc if it doesn't exist
+    local withrc_file = os.getenv('WITHRC') or home_dir .. '/.withrc'
+
+    if posix.stat(withrc_file) then
+        local chunk, err = loadfile(withrc_file)
         if not chunk then
-            io.stderr:write(home_dir .. '/.withrc failed to load: ', err, '\n')
+            io.stderr:write(withrc_file .. ' failed to load: ', err, '\n')
         else
             local success, err = pcall(setfenv(chunk, config_sandbox))
             if not success then
-                io.stderr:write(home_dir .. '/.withrc failed to load: ', err, '\n')
+                io.stderr:write(withrc_file .. ' failed to load: ', err, '\n')
             end
         end
     end
