@@ -18,6 +18,7 @@ Namespace specification:
     --augment=with_path=source_path, -a  Creates a link from with_path to source_path
     --profile=profile_name, -p           Use the specified profile
     --no-import, -n                      Do not import the current namespace
+    --no-default, -d                     Do not import the default namespace
 
 Tools:
     --show                               Shows the current namespace
@@ -32,7 +33,7 @@ Debugging:
     --exec-fallback                      exec() a normal shell on failure; must be first argument
 
 The following namespaces are reserved since they have special meanings to the 'with' command:
-    profile, profiles, no-default
+    profile, profiles, no-default, no-import
     show, showpid, clone, clonepid, list, dry-run, exec-fallback
 ]==]
 
@@ -178,7 +179,7 @@ function run_with_command(non_opts, opts, optarg)
     -- handle the args
     local profiles = {}
     local augments = {}
-    local no_import, show_profiles
+    local no_import, no_default, show_profiles
 
     for i, v in ipairs(opts) do
         if v == 'help' then
@@ -191,6 +192,8 @@ function run_with_command(non_opts, opts, optarg)
             table.insert(profiles, optarg[i])
         elseif v == 'n' then --no-import
             no_import = true
+        elseif v == 'd' then --no-default
+            no_default = true
         -- tools
         elseif v == "show" then
             return show_pid('self', true)
@@ -256,11 +259,16 @@ function run_with_command(non_opts, opts, optarg)
         return
     end
 
-    -- Clone the current namespace so you can augment it, unless the no-import
-    -- option was specified
+    -- Clone the current namespace so you can augment it,
+    -- unless the no-import option was specified
     local namespace = {}
     if not no_import then
         namespace = namespace_table_for_exec(with_exec.show_namespace('self'))
+    end
+
+    -- use the default profile, unless told not to
+    if #profiles == 0 and not no_default then
+        table.insert(profiles, 'default')
     end
 
     -- Extract the profiles
@@ -332,6 +340,7 @@ opts, optind, optarg = alt_getopt.get_ordered_opts(arg, "a:b:d:lnp:",
         augment = 'a',
         profile = 'p',
         ['no-import'] = 'n',
+        ['no-default'] = 'd',
         -- tools
         show = 0,
         showpid = 1,
